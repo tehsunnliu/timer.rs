@@ -1,0 +1,7 @@
+[package]
+name = "timer"
+version = "0.1.0"
+authors = ["David Rajchenbach-Teller <david.teller@univ-orleans.fr>"]
+
+[dependencies]
+time = "^0.1"
