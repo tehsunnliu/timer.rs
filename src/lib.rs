@@ -260,10 +260,11 @@ impl Timer {
     /// Any failure in `cb` will scheduler thread and progressively
     /// contaminate the Timer and the calling thread itself. You have
     /// been warned.
-    pub fn schedule_with_date<F>(&self, date: DateTime<UTC>, cb: F)
-        where F: 'static + FnMut() + Send {
+    pub fn schedule_with_date<F, T>(&self, date: DateTime<T>, cb: F)
+        where F: 'static + FnMut() + Send, T : chrono::offset::TimeZone
+    {
         self.tx.send(Op::Schedule(Schedule {
-            date: date,
+            date: date.with_timezone(&UTC),
             cb: Box::new(cb)
         })).unwrap();
     }
