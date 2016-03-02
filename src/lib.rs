@@ -48,33 +48,82 @@ enum Op {
 
 /// A mutex-based kind-of-channel used to communicate between the
 /// Communication thread and the Scheuler thread.
-struct LockingChannel {
+struct WaiterChannel {
     /// Pending messages.
     messages: Mutex<Vec<Op>>,
     /// A condition variable used for waiting.
     condvar: Condvar,
 }
-impl LockingChannel {
+impl WaiterChannel {
     fn with_capacity(cap: usize) -> Self {
-        LockingChannel {
+        WaiterChannel {
             messages: Mutex::new(Vec::with_capacity(cap)),
             condvar: Condvar::new(),
         }
     }
 }
 
-/*
 struct Scheduler {
-
+    waiter: Arc<WaiterChannel>,
+    heap: BinaryHeap<Schedule>,
 }
 
 impl Scheduler {
-    fn new() -> Self {
+    fn with_capacity(waiter: Arc<WaiterChannel>, capacity: usize) -> Self {
+        Scheduler {
+            waiter: waiter,
+            heap: BinaryHeap::with_capacity(capacity),
+        }
     }
-    fn run(&self) {
+    fn run(&mut self) {
+        let ref waiter = *self.waiter;
+        loop {
+            let mut lock = waiter.messages.lock().unwrap();
+
+            // Pop all messages.
+            for msg in lock.drain(..) {
+                match msg {
+                    Op::Stop => {
+                        return;
+                    }
+                    Op::Schedule(sched) => self.heap.push(sched),
+                }
+            }
+
+            // Pop all the callbacks that are ready.
+            let mut delay = None;
+            loop {
+                let now = UTC::now();
+                if let Some(sched) = self.heap.peek() {
+                    if sched.date > now {
+                        // First item is not ready yet, so nothing is ready.
+                        // We assume that `sched.date > now` is still true.
+                        delay = Some(sched.date - now);
+                        break;
+                    }
+                } else {
+                    // No item at all.
+                    break;
+                }
+                let sched = self.heap.pop().unwrap(); // We just checked that the heap is not empty.
+                (sched.cb)();
+            }
+
+            match delay {
+                None => {
+                    let _ = waiter.condvar.wait(lock);
+                },
+                Some(delay) => {
+                    let sec = delay.num_seconds();
+                    let ns = (delay - Duration::seconds(sec)).num_nanoseconds().unwrap(); // This `unwrap()` asserts that the number of ns is not > 1_000_000_000. Since we just substracted the number of seconds, the assertion should always pass.
+                    let duration = std::time::Duration::new(sec as u64, ns as u32);
+                    let _ = waiter.condvar.wait_timeout(lock, duration);
+                }
+            }
+        }
     }
 }
- */
+
 
 /// A timer, used to schedule execution of callbacks at a later date.
 ///
@@ -108,8 +157,8 @@ impl Timer {
 
     /// As `new()`, but with a manually specified initial capaicty.
     pub fn with_capacity(capacity: usize) -> Self {
-        let waiter_rcv = Arc::new(LockingChannel::with_capacity(capacity));
-        let waiter_snd = waiter_rcv.clone();
+        let waiter_send = Arc::new(WaiterChannel::with_capacity(capacity));
+        let waiter_recv = waiter_send.clone();
 
         // Spawn a first thread, whose sole role is to dispatch
         // messages to the second thread without having to wait too
@@ -117,18 +166,18 @@ impl Timer {
         let (tx, rx) = channel();
         thread::spawn(move || {
             use Op::*;
-            let ref locking = *waiter_snd;
+            let ref waiter = *waiter_send;
             for msg in rx.iter() {
-                let mut vec = locking.messages.lock().unwrap();
+                let mut vec = waiter.messages.lock().unwrap();
                 match msg {
                     Schedule(sched) => {
                         vec.push(Schedule(sched));
-                        locking.condvar.notify_one();
+                        waiter.condvar.notify_one();
                     }
                     Stop => {
                         vec.clear();
                         vec.push(Op::Stop);
-                        locking.condvar.notify_one();
+                        waiter.condvar.notify_one();
                         return;
                     }
                 }
@@ -136,55 +185,10 @@ impl Timer {
         });
 
         // Spawn a second thread, in charge of scheduling.
-        let mut heap = BinaryHeap::with_capacity(capacity);
         thread::Builder::new().name("Timer thread".to_owned()).spawn(move || {
-            let ref locking = *waiter_rcv;
-            loop {
-                let mut lock = locking.messages.lock().unwrap();
-
-                // Pop all messages.
-                for msg in lock.drain(..) {
-                    match msg {
-                        Op::Stop => {
-                            return;
-                        }
-                        Op::Schedule(sched) => heap.push(sched),
-                    }
-                }
-
-                // Pop all the callbacks that are ready.
-                let mut delay = None;
-                loop {
-                    let now = UTC::now();
-                    if let Some(sched) = heap.peek() {
-                        if sched.date > now {
-                            // First item is not ready yet, so nothing is ready.
-                            // We assume that `sched.date > now` is still true.
-                            delay = Some(sched.date - now);
-                            break;
-                        }
-                    } else {
-                        // No item at all.
-                        break;
-                    }
-                    let sched = heap.pop().unwrap(); // We just checked that the heap is not empty.
-                    (sched.cb)();
-                }
-
-                match delay {
-                    None => {
-                        let _ = locking.condvar.wait(lock);
-                    },
-                    Some(delay) => {
-                        let sec = delay.num_seconds();
-                        let ns = (delay - Duration::seconds(sec)).num_nanoseconds().unwrap(); // This `unwrap()` asserts that the number of ns is not > 1_000_000_000. Since we just substracted the number of seconds, the assertion should always pass.
-                        let duration = std::time::Duration::new(sec as u64, ns as u32);
-                        let _ = locking.condvar.wait_timeout(lock, duration);
-                    }
-                }
-            }
+            let mut scheduler = Scheduler::with_capacity(waiter_recv, capacity);
+            scheduler.run()
         }).unwrap();
-
         Timer {
             tx: tx
         }
