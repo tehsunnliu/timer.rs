@@ -17,7 +17,7 @@ struct Schedule {
     date: DateTime<UTC>,
 
     /// The callback to execute.
-    cb: Box<Fn() + Send>
+    cb: Box<FnMut() + Send>
 }
 impl Ord for Schedule {
     fn cmp(&self, other: &Self) -> Ordering {
@@ -105,7 +105,7 @@ impl Scheduler {
                     // No item at all.
                     break;
                 }
-                let sched = self.heap.pop().unwrap(); // We just checked that the heap is not empty.
+                let mut sched = self.heap.pop().unwrap(); // We just checked that the heap is not empty.
                 (sched.cb)();
             }
 
@@ -236,7 +236,7 @@ impl Timer {
     /// println!("This code has been executed after 3 seconds");
     /// ```
     pub fn schedule_with_delay<F>(&self, delay: Duration, cb: F)
-        where F: 'static + Fn() + Send {
+        where F: 'static + FnMut() + Send {
         self.schedule_with_date(UTC::now() + delay, cb)
     }
 
@@ -261,7 +261,7 @@ impl Timer {
     /// contaminate the Timer and the calling thread itself. You have
     /// been warned.
     pub fn schedule_with_date<F>(&self, date: DateTime<UTC>, cb: F)
-        where F: 'static + Fn() + Send {
+        where F: 'static + FnMut() + Send {
         self.tx.send(Op::Schedule(Schedule {
             date: date,
             cb: Box::new(cb)
