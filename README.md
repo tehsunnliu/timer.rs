@@ -7,13 +7,13 @@ Simple implementation of a Timer in and for Rust.
 # Example
 ```rust
 extern crate timer;
-extern crate time;
+extern crate chrono;
 use std::sync::mpsc::channel;
 
 let timer = timer::Timer::new();
 let (tx, rx) = channel();
 
-timer.schedule_with_delay(time::Duration::seconds(3), move || {
+timer.schedule_with_delay(chrono::Duration::seconds(3), move || {
   tx.send(()).unwrap();
 });
 

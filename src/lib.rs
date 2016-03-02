@@ -1,7 +1,7 @@
 //! A simple timer, used to enqueue operations meant to be executed at
 //! a given time or after a given delay.
 
-extern crate time;
+extern crate chrono;
 
 use std::cmp::Ordering;
 use std::thread;
@@ -9,12 +9,12 @@ use std::sync::{Arc, Mutex, Condvar};
 use std::sync::mpsc::{channel, Sender};
 use std::collections::BinaryHeap;
     
-use time::{Duration, SteadyTime};
+use chrono::{Duration, DateTime, UTC};
 
 /// An item scheduled for delayed execution.
 struct Schedule {
     /// The instant at which to execute.
-    date: SteadyTime,
+    date: DateTime<UTC>,
 
     /// The callback to execute.
     cb: Box<Fn() + Send>
@@ -121,7 +121,7 @@ impl Timer {
                 // Pop all the callbacks that are ready.
                 let mut delay = None;
                 loop {
-                    let now = SteadyTime::now();
+                    let now = UTC::now();
                     if let Some(sched) = heap.peek() {
                         if sched.date > now {
                             // First item is not ready yet, so nothing is ready.
@@ -180,14 +180,17 @@ impl Timer {
     ///
     /// ```
     /// extern crate timer;
-    /// extern crate time;
+    /// extern crate chrono;
     /// use std::sync::mpsc::channel;
     ///
     /// let timer = timer::Timer::new();
     /// let (tx, rx) = channel();
     ///
-    /// timer.schedule_with_delay(time::Duration::seconds(3), move || {
-    ///   tx.send(()).unwrap();
+    /// timer.schedule_with_delay(chrono::Duration::seconds(3), move || {
+    ///   // This closure is executed on the scheduler thread,
+    ///   // so we want to move it away asap.
+    ///
+    ///   let _ignored = tx.send(()); // Avoid unwrapping here.
     /// });
     ///
     /// rx.recv().unwrap();
@@ -195,7 +198,7 @@ impl Timer {
     /// ```
     pub fn schedule_with_delay<F>(&self, delay: Duration, cb: F)
         where F: 'static + Fn() + Send {
-        self.schedule_with_date(SteadyTime::now() + delay, cb)
+        self.schedule_with_date(UTC::now() + delay, cb)
     }
 
     /// Schedule a callback for execution at a given date.
@@ -218,7 +221,7 @@ impl Timer {
     /// Any failure in `cb` will scheduler thread and progressively
     /// contaminate the Timer and the calling thread itself. You have
     /// been warned.
-    pub fn schedule_with_date<F>(&self, date: SteadyTime, cb: F)
+    pub fn schedule_with_date<F>(&self, date: DateTime<UTC>, cb: F)
         where F: 'static + Fn() + Send {
         self.tx.send(Op::Schedule(Schedule {
             date: date,
@@ -235,7 +238,7 @@ fn test_schedule_with_delay() {
     // Schedule a number of callbacks in an arbitrary order, make sure
     // that they are executed in the right order.
     let mut delays = vec![1, 5, 3, -1];
-    let start = SteadyTime::now();
+    let start = UTC::now();
     for i in delays.clone() {
         println!("Scheduling for execution in {} seconds", i);
         let tx = tx.clone();
@@ -247,7 +250,7 @@ fn test_schedule_with_delay() {
 
     delays.sort();
     for (i, msg) in (0..delays.len()).zip(rx.iter()) {
-        let elapsed = (SteadyTime::now() - start).num_seconds();
+        let elapsed = (UTC::now() - start).num_seconds();
         println!("Received message {} after {} seconds", msg, elapsed);
         assert_eq!(msg, delays[i]);
         assert!(delays[i] <= elapsed && elapsed <= delays[i] + 3, "We have waited {} seconds, expecting [{}, {}]", elapsed, delays[i], delays[i] + 3);
@@ -255,7 +258,7 @@ fn test_schedule_with_delay() {
 
     // Now make sure that callbacks that are designed to be executed
     // immediately are executed quickly.
-    let start = SteadyTime::now();
+    let start = UTC::now();
     for i in vec![10, 0] {
         println!("Scheduling for execution in {} seconds", i);
         let tx = tx.clone();
@@ -266,5 +269,5 @@ fn test_schedule_with_delay() {
     }
 
     assert_eq!(rx.recv().unwrap(), 0);
-    assert!(SteadyTime::now() - start <= Duration::seconds(1));
+    assert!(UTC::now() - start <= Duration::seconds(1));
 }
