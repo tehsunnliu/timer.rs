@@ -310,27 +310,3 @@ fn test_schedule_with_delay() {
     assert_eq!(rx.recv().unwrap(), 0);
     assert!(UTC::now() - start <= Duration::seconds(1));
 }
-
-#[test]
-fn test_schedule_and_panic() {
-    let timer = Timer::new();
-    for i in 0..1000 {
-        let (tx, rx) = channel();
-        timer.schedule_with_delay(Duration::milliseconds(i), move || {
-            println!("Received callback {}, preparing to panic", i);
-            if true {
-                panic!("Testing the behavior in presence of a panic");
-            } else {
-                tx.send(()).unwrap();
-            }
-        });
-        assert!(rx.try_recv().is_err());
-    }
-
-    let (tx, rx) = channel();
-    timer.schedule_with_delay(Duration::seconds(1), move || {
-        println!("Received final callback, don't panic");
-        tx.send(()).unwrap();
-    });
-    rx.try_recv().unwrap();
-}
