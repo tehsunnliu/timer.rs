@@ -172,8 +172,9 @@ impl Timer {
     ///
     /// # Failures
     ///
-    /// Any failure in `cb` will break the scheduler. You have been
-    /// warned.
+    /// Any failure in `cb` will scheduler thread and progressively
+    /// contaminate the Timer and the calling thread itself. You have
+    /// been warned.
     ///
     /// # Example
     ///
@@ -213,8 +214,10 @@ impl Timer {
     /// other callbacks.
     ///
     /// # Failures
-    /// Any failure in `cb` will break the scheduler. You have been
-    /// warned.
+    ///
+    /// Any failure in `cb` will scheduler thread and progressively
+    /// contaminate the Timer and the calling thread itself. You have
+    /// been warned.
     pub fn schedule_with_date<F>(&self, date: SteadyTime, cb: F)
         where F: 'static + Fn() + Send {
         self.tx.send(Op::Schedule(Schedule {
@@ -232,7 +235,7 @@ fn test_schedule_with_delay() {
     // Schedule a number of callbacks in an arbitrary order, make sure
     // that they are executed in the right order.
     let mut delays = vec![1, 5, 3, -1];
-
+    let start = SteadyTime::now();
     for i in delays.clone() {
         println!("Scheduling for execution in {} seconds", i);
         let tx = tx.clone();
@@ -244,8 +247,10 @@ fn test_schedule_with_delay() {
 
     delays.sort();
     for (i, msg) in (0..delays.len()).zip(rx.iter()) {
-        println!("Received {}", msg);
-        assert_eq!(msg, delays[i])
+        let elapsed = (SteadyTime::now() - start).num_seconds();
+        println!("Received message {} after {} seconds", msg, elapsed);
+        assert_eq!(msg, delays[i]);
+        assert!(delays[i] <= elapsed && elapsed <= delays[i] + 3, "We have waited {} seconds, expecting [{}, {}]", elapsed, delays[i], delays[i] + 3);
     }
 
     // Now make sure that callbacks that are designed to be executed
