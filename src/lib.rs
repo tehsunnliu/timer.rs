@@ -46,6 +46,36 @@ enum Op {
     Stop
 }
 
+/// A mutex-based kind-of-channel used to communicate between the
+/// Communication thread and the Scheuler thread.
+struct LockingChannel {
+    /// Pending messages.
+    messages: Mutex<Vec<Op>>,
+    /// A condition variable used for waiting.
+    condvar: Condvar,
+}
+impl LockingChannel {
+    fn with_capacity(cap: usize) -> Self {
+        LockingChannel {
+            messages: Mutex::new(Vec::with_capacity(cap)),
+            condvar: Condvar::new(),
+        }
+    }
+}
+
+/*
+struct Scheduler {
+
+}
+
+impl Scheduler {
+    fn new() -> Self {
+    }
+    fn run(&self) {
+    }
+}
+ */
+
 /// A timer, used to schedule execution of callbacks at a later date.
 ///
 /// In the current implementation, each timer is executed as two
@@ -55,6 +85,8 @@ enum Op {
 /// _Scheduler_ thread (which requires acquiring a possibly-long-held
 /// Mutex) without blocking the caller thread.
 pub struct Timer {
+    /// Sender used to communicate with the _Communication_ thread. In
+    /// turn, this thread will send 
     tx: Sender<Op>
 }
 
@@ -76,7 +108,7 @@ impl Timer {
 
     /// As `new()`, but with a manually specified initial capaicty.
     pub fn with_capacity(capacity: usize) -> Self {
-        let waiter_rcv = Arc::new((Mutex::new(Vec::with_capacity(capacity)), Condvar::new()));
+        let waiter_rcv = Arc::new(LockingChannel::with_capacity(capacity));
         let waiter_snd = waiter_rcv.clone();
 
         // Spawn a first thread, whose sole role is to dispatch
@@ -85,18 +117,18 @@ impl Timer {
         let (tx, rx) = channel();
         thread::spawn(move || {
             use Op::*;
+            let ref locking = *waiter_snd;
             for msg in rx.iter() {
-                let (ref mutex, ref condvar) = *waiter_snd;
-                let mut vec = mutex.lock().unwrap();
+                let mut vec = locking.messages.lock().unwrap();
                 match msg {
                     Schedule(sched) => {
                         vec.push(Schedule(sched));
-                        condvar.notify_one();
+                        locking.condvar.notify_one();
                     }
                     Stop => {
                         vec.clear();
                         vec.push(Op::Stop);
-                        condvar.notify_one();
+                        locking.condvar.notify_one();
                         return;
                     }
                 }
@@ -106,14 +138,16 @@ impl Timer {
         // Spawn a second thread, in charge of scheduling.
         let mut heap = BinaryHeap::with_capacity(capacity);
         thread::Builder::new().name("Timer thread".to_owned()).spawn(move || {
-            let (ref mutex, ref condvar) = *waiter_rcv;
+            let ref locking = *waiter_rcv;
             loop {
-                let mut lock = mutex.lock().unwrap();
+                let mut lock = locking.messages.lock().unwrap();
 
                 // Pop all messages.
                 for msg in lock.drain(..) {
                     match msg {
-                        Op::Stop => return,
+                        Op::Stop => {
+                            return;
+                        }
                         Op::Schedule(sched) => heap.push(sched),
                     }
                 }
@@ -139,17 +173,18 @@ impl Timer {
 
                 match delay {
                     None => {
-                        let _ = condvar.wait(lock);
+                        let _ = locking.condvar.wait(lock);
                     },
                     Some(delay) => {
                         let sec = delay.num_seconds();
-                        let ns = (delay - Duration::seconds(sec)).num_nanoseconds().unwrap(); // Cannot be > 1_000_000_000.
+                        let ns = (delay - Duration::seconds(sec)).num_nanoseconds().unwrap(); // This `unwrap()` asserts that the number of ns is not > 1_000_000_000. Since we just substracted the number of seconds, the assertion should always pass.
                         let duration = std::time::Duration::new(sec as u64, ns as u32);
-                        let _ = condvar.wait_timeout(lock, duration);
+                        let _ = locking.condvar.wait_timeout(lock, duration);
                     }
                 }
             }
         }).unwrap();
+
         Timer {
             tx: tx
         }
@@ -270,4 +305,28 @@ fn test_schedule_with_delay() {
 
     assert_eq!(rx.recv().unwrap(), 0);
     assert!(UTC::now() - start <= Duration::seconds(1));
+}
+
+#[test]
+fn test_schedule_and_panic() {
+    let timer = Timer::new();
+    for i in 0..1000 {
+        let (tx, rx) = channel();
+        timer.schedule_with_delay(Duration::milliseconds(i), move || {
+            println!("Received callback {}, preparing to panic", i);
+            if true {
+                panic!("Testing the behavior in presence of a panic");
+            } else {
+                tx.send(()).unwrap();
+            }
+        });
+        assert!(rx.try_recv().is_err());
+    }
+
+    let (tx, rx) = channel();
+    timer.schedule_with_delay(Duration::seconds(1), move || {
+        println!("Received final callback, don't panic");
+        tx.send(()).unwrap();
+    });
+    rx.try_recv().unwrap();
 }
