@@ -176,6 +176,7 @@ pub struct Timer {
 }
 
 impl Drop for Timer {
+    /// Stop the timer threads.
     fn drop(&mut self) {
         self.tx.send(Op::Stop).unwrap();
     }
@@ -411,6 +412,8 @@ impl Timer {
     }
 }
 
+/// A value scoping a schedule. When this value is dropped, the
+/// schedule is cancelled.
 #[derive(Clone)]
 pub struct Guard {
     should_execute: Arc<AtomicBool>
@@ -426,6 +429,7 @@ impl Guard {
     }
 }
 impl Drop for Guard {
+    /// Cancel a schedule.
     fn drop(&mut self) {
         self.should_execute.store(false, AtomicOrdering::Relaxed)
     }
