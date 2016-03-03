@@ -347,6 +347,7 @@ impl Timer {
     ///
     /// // Now drop the guard. This should stop the timer.
     /// drop(guard);
+    /// thread::sleep(std::time::Duration::new(0, 100));
     ///
     /// // Let's check that the count stops increasing.
     /// let count_start = *count.lock().unwrap();
