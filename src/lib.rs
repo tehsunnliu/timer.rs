@@ -83,7 +83,14 @@ impl Scheduler {
             heap: BinaryHeap::with_capacity(capacity),
         }
     }
+
     fn run(&mut self) {
+        enum Sleep {
+            NotAtAll,
+            UntilAwakened,
+            AtMost(Duration)
+        }
+
         let ref waiter = *self.waiter;
         loop {
             let mut lock = waiter.messages.lock().unwrap();
@@ -99,31 +106,35 @@ impl Scheduler {
             }
 
             // Pop all the callbacks that are ready.
-            let mut delay = None;
+
+            // If we don't find
+            let mut sleep = Sleep::UntilAwakened;
             loop {
                 let now = UTC::now();
                 if let Some(sched) = self.heap.peek() {
                     if sched.date > now {
-                        // First item is not ready yet, so nothing is ready.
-                        // We assume that `sched.date > now` is still true.
-                        delay = Some(sched.date - now);
+                        // First item is not ready yet, so we need to
+                        // wait until it is or something happens.
+                        sleep = Sleep::AtMost(sched.date - now);
                         break;
                     }
                 } else {
-                    // No item at all.
+                    // Schedule is empty, nothing to do, wait until something happens.
                     break;
                 }
-                let mut sched = self.heap.pop().unwrap(); // We just checked that the heap is not empty.
+                // At this stage, we have an item that has reached
+                // execution time. The `unwrap()` is guaranteed to
+                // succeed.
+                let mut sched = self.heap.pop().unwrap();
                 if !sched.guard.should_execute() {
-                    // Skip this callback.
+                    // Execution has been cancelled, skip this item.
                     continue;
                 }
                 (sched.cb)();
                 if let Some(delta) = sched.repeat {
-                    // This is a repeating timer, so we need to enqueue the next
-                    // call, unless it has been cancelled.
-                    assert!(delay.is_none());
-                    delay = Some(delta);
+                    // This is a repeating timer, so we need to
+                    // enqueue the next call.
+                    sleep = Sleep::NotAtAll;
                     self.heap.push(Schedule {
                         date: sched.date + delta,
                         cb: sched.cb,
@@ -133,16 +144,17 @@ impl Scheduler {
                 }
             }
 
-            match delay {
-                None => {
+            match sleep {
+                Sleep::UntilAwakened => {
                     let _ = waiter.condvar.wait(lock);
                 },
-                Some(delay) => {
+                Sleep::AtMost(delay) => {
                     let sec = delay.num_seconds();
                     let ns = (delay - Duration::seconds(sec)).num_nanoseconds().unwrap(); // This `unwrap()` asserts that the number of ns is not > 1_000_000_000. Since we just substracted the number of seconds, the assertion should always pass.
                     let duration = std::time::Duration::new(sec as u64, ns as u32);
                     let _ = waiter.condvar.wait_timeout(lock, duration);
-                }
+                },
+                Sleep::NotAtAll => {}
             }
         }
     }
