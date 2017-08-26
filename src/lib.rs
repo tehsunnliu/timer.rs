@@ -10,12 +10,13 @@ use std::sync::atomic::Ordering as AtomicOrdering;
 use std::sync::{Arc, Mutex, Condvar};
 use std::sync::mpsc::{channel, Sender};
 use std::collections::BinaryHeap;
-use chrono::{Duration, DateTime, UTC};
+use chrono::{Duration, DateTime};
+use chrono::offset::Utc;
 
 /// An item scheduled for delayed execution.
 struct Schedule<T> {
     /// The instant at which to execute.
-    date: DateTime<UTC>,
+    date: DateTime<Utc>,
 
     /// The schedule data.
     data : T,
@@ -173,12 +174,12 @@ impl <T,E> Scheduler<T,E> where E : Executor<T> {
             // If we don't find
             let mut sleep = Sleep::UntilAwakened;
             loop {
-                let now = UTC::now();
+                let now = Utc::now();
                 if let Some(sched) = self.heap.peek() {
                     if sched.date > now {
                         // First item is not ready yet, so we need to
                         // wait until it is or something happens.
-                        sleep = Sleep::AtMost(sched.date - now);
+                        sleep = Sleep::AtMost(sched.date.signed_duration_since(now));
                         break;
                     }
                 } else {
@@ -296,7 +297,7 @@ impl <T> TimerBase<T>
     }
 
     pub fn schedule_with_delay(&self, delay: Duration, data : T) -> Guard {
-        self.schedule_with_date(UTC::now() + delay, data)
+        self.schedule_with_date(Utc::now() + delay, data)
     }
 
     pub fn schedule_with_date<D>(&self, date: DateTime<D>, data : T) -> Guard
@@ -307,7 +308,7 @@ impl <T> TimerBase<T>
 
     pub fn schedule_repeating(&self, repeat: Duration, data : T) -> Guard
     {
-        self.schedule(UTC::now() + repeat, Some(repeat), data)
+        self.schedule(Utc::now() + repeat, Some(repeat), data)
     }
 
     pub fn schedule<D>(&self, date: DateTime<D>, repeat: Option<Duration>, data : T) -> Guard
@@ -315,7 +316,7 @@ impl <T> TimerBase<T>
     {
         let guard = Guard::new();
         self.tx.send(Op::Schedule(Schedule {
-            date: date.with_timezone(&UTC),
+            date: date.with_timezone(&Utc),
             data: data,
             guard: guard.clone(),
             repeat: repeat
@@ -730,7 +731,7 @@ mod tests {
     use std::sync::mpsc::channel;
     use std::sync::{Arc, Mutex};
     use std::thread;
-    use chrono::{Duration, UTC};
+    use chrono::{Duration, Utc};
 
     #[test]
     fn test_schedule_with_delay() {
@@ -741,7 +742,7 @@ mod tests {
         // Schedule a number of callbacks in an arbitrary order, make sure
         // that they are executed in the right order.
         let mut delays = vec![1, 5, 3, -1];
-        let start = UTC::now();
+        let start = Utc::now();
         for i in delays.clone() {
             println!("Scheduling for execution in {} seconds", i);
             let tx = tx.clone();
@@ -753,7 +754,7 @@ mod tests {
 
         delays.sort();
         for (i, msg) in (0..delays.len()).zip(rx.iter()) {
-            let elapsed = (UTC::now() - start).num_seconds();
+            let elapsed = Utc::now().signed_duration_since(start).num_seconds();
             println!("Received message {} after {} seconds", msg, elapsed);
             assert_eq!(msg, delays[i]);
             assert!(delays[i] <= elapsed && elapsed <= delays[i] + 3, "We have waited {} seconds, expecting [{}, {}]", elapsed, delays[i], delays[i] + 3);
@@ -761,7 +762,7 @@ mod tests {
 
         // Now make sure that callbacks that are designed to be executed
         // immediately are executed quickly.
-        let start = UTC::now();
+        let start = Utc::now();
         for i in vec![10, 0] {
             println!("Scheduling for execution in {} seconds", i);
             let tx = tx.clone();
@@ -772,14 +773,14 @@ mod tests {
         }
 
         assert_eq!(rx.recv().unwrap(), 0);
-        assert!(UTC::now() - start <= Duration::seconds(1));
+        assert!(Utc::now().signed_duration_since(start) <= Duration::seconds(1));
     }
 
     #[test]
     fn test_message_timer() {
         let (tx, rx) = channel();
         let timer = MessageTimer::new(tx);
-        let start = UTC::now();
+        let start = Utc::now();
 
         let mut delays = vec!(400, 300, 100, 500, 200);
         for delay in delays.clone() {
@@ -790,7 +791,7 @@ mod tests {
         for delay in delays {
             assert_eq!(rx.recv().unwrap(), delay);
         }
-        assert!(UTC::now() - start <= Duration::seconds(1));
+        assert!(Utc::now().signed_duration_since(start) <= Duration::seconds(1));
     }
 
     #[test]
