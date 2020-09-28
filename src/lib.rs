@@ -157,58 +157,64 @@ impl <T,E> Scheduler<T,E> where E : Executor<T> {
 
         let ref waiter = *self.waiter;
         loop {
-            let mut lock = waiter.messages.lock().unwrap();
+            let mut sleep = if let Some(sched) = self.heap.peek() {
+                let now = Utc::now();
+                if sched.date > now {
+                    // First item is not ready yet, so we need to
+                    // wait until it is or something happens.
+                    Sleep::AtMost(sched.date.signed_duration_since(now))
+                } else {
+                    // At this stage, we have an item that has reached
+                    // execution time. The `unwrap()` is guaranteed to
+                    // succeed.
+                    let sched = self.heap.pop().unwrap();
 
+                    // The item we just popped might have been killed.
+                    // Let's check that before executing.
+                    if sched.guard.should_execute() {
+                        // We have something to do.
+                        if let Some(delta) = sched.repeat {
+                            let data = self.executor.execute_clone(sched.data);
+
+                            // This is a repeating timer, so we need to
+                            // enqueue the next call.
+                            self.heap.push(Schedule {
+                                date: sched.date + delta,
+                                data: data,
+                                guard: sched.guard,
+                                repeat: Some(delta),
+                            });
+                        } else {
+                            self.executor.execute(sched.data);
+                        }
+                    }
+
+                    // We have just popped an item, but it might be too early
+                    // to go back to sleep. Maybe the next item will need to
+                    // be executed immediately.
+                    // We do not `continue`, to ensure the `waiter.messages`
+                    // are checked before next item is executed.
+                    Sleep::NotAtAll
+                }
+            } else {
+                // Nothing to do
+                Sleep::UntilAwakened
+            };
+
+            let mut lock = waiter.messages.lock().unwrap();
             // Pop all messages.
             for msg in lock.drain(..) {
                 match msg {
                     Op::Stop => {
+                        // Stop immediately, even if there are any pending timer actions.
                         return;
                     }
-                    Op::Schedule(sched) => self.heap.push(sched),
-                }
-            }
-
-            // Pop all the callbacks that are ready.
-
-            // If we don't find
-            let mut sleep = Sleep::UntilAwakened;
-            loop {
-                let now = Utc::now();
-                if let Some(sched) = self.heap.peek() {
-                    if sched.date > now {
-                        // First item is not ready yet, so we need to
-                        // wait until it is or something happens.
-                        sleep = Sleep::AtMost(sched.date.signed_duration_since(now));
-                        break;
+                    Op::Schedule(sched) => {
+                        self.heap.push(sched);
+                        // New item was added to heap, we must check if sleep
+                        // is needed or not, hence we cannot sleep
+                        sleep = Sleep::NotAtAll;
                     }
-                } else {
-                    // Schedule is empty, nothing to do, wait until something happens.
-                    break;
-                }
-                // At this stage, we have an item that has reached
-                // execution time. The `unwrap()` is guaranteed to
-                // succeed.
-                let sched = self.heap.pop().unwrap();
-                if !sched.guard.should_execute() {
-                    // Execution has been cancelled, skip this item.
-                    continue;
-                }
-
-                if let Some(delta) = sched.repeat {
-                    let data = self.executor.execute_clone(sched.data);
-
-                    // This is a repeating timer, so we need to
-                    // enqueue the next call.
-                    sleep = Sleep::NotAtAll;
-                    self.heap.push(Schedule {
-                        date: sched.date + delta,
-                        data: data,
-                        guard: sched.guard,
-                        repeat: Some(delta)
-                    });
-                } else {
-                    self.executor.execute(sched.data);
                 }
             }
 
@@ -847,5 +853,48 @@ mod tests {
         for _ in 0..2 {
             let _  = rx.recv();
         }
+    }
+
+    #[test]
+    fn test_too_much_work() {
+        // Make sure that even if the timer has too much work, tasks still get executed
+        // and dropping the timer still kills future tasks.
+
+        // To do this, we schedule a task longer to execute than its `repeat` interval.
+        let timer = Timer::new();
+        let was_called = Arc::new(Mutex::new(false));
+        let was_called_2 = Arc::new(Mutex::new(false));
+
+        {
+            let was_called = was_called.clone();
+            // Schedule a task longer than repeat time
+            timer.schedule(Utc::now(), Some(Duration::milliseconds(10)), move || {
+                thread::sleep(std::time::Duration::from_millis(30));
+                *was_called.lock().unwrap() = true;
+            }).ignore();
+            let was_called_2 = was_called_2.clone();
+
+            // Now schedule another task.
+            timer.schedule(Utc::now(), None, move || {
+                thread::sleep(std::time::Duration::from_millis(30));
+                *was_called_2.lock().unwrap() = true;
+            }).ignore();
+        }
+
+        // Check that both our tasks were executed.
+        thread::sleep(std::time::Duration::from_millis(150));
+        assert!(*was_called.lock().unwrap(), "Periodic task should have been called");
+        assert!(*was_called_2.lock().unwrap(), "One-time task should have been called");
+
+        // Now drop the timer. This should stop any task from being executed.
+        drop(timer);
+
+        // Check that the periodic task isn't executed anymore.
+        // First, we wait in case we haven't finished executing it,
+        // then we reset it and check that it isn't executed.
+        thread::sleep(std::time::Duration::from_millis(150));
+        *was_called.lock().unwrap() = false;
+        thread::sleep(std::time::Duration::from_millis(200));
+        assert!(!*was_called.lock().unwrap(), "Task should have been stopped when the timer dropped");
     }
 }
