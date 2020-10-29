@@ -102,7 +102,7 @@ trait Executor<T> {
 /// thread.
 struct CallbackExecutor;
 
-impl Executor<Box<FnMut() + Send>> for CallbackExecutor {
+impl Executor<Box<dyn FnMut() + Send>> for CallbackExecutor {
     fn execute(&mut self, mut data : Box<FnMut() + Send>) {
         data();
     }
