@@ -1,5 +1,6 @@
 //! A simple timer, used to enqueue operations meant to be executed at
 //! a given time or after a given delay.
+#![no_std]
 
 extern crate chrono;
 
